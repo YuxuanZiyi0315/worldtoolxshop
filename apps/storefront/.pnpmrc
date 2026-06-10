@@ -1,0 +1,2 @@
+# 允许这些依赖运行构建脚本（Vercel 部署需要）
+only-built-dependencies=false
