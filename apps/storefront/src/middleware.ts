@@ -10,19 +10,28 @@ const regionMapCache = {
   regionMapUpdated: Date.now(),
 }
 
-async function getRegionMap(cacheId: string) {
+async function getRegionMap(
+  cacheId: string
+): Promise<Map<string, HttpTypes.StoreRegion>> {
   const { regionMap, regionMapUpdated } = regionMapCache
 
+  // If backend URL is not configured, return empty map (graceful degradation)
   if (!BACKEND_URL) {
-    throw new Error(
-      "Middleware.ts: Error fetching regions. Did you set up regions in your Medusa Admin and define a NEXT_PUBLIC_MEDUSA_BACKEND_URL environment variable."
+    console.warn(
+      "Middleware: NEXT_PUBLIC_MEDUSA_BACKEND_URL is not set. Skipping region lookup."
     )
+    return new Map<string, HttpTypes.StoreRegion>()
   }
 
+  // Skip refetch if cache is still fresh (within 1 hour)
   if (
-    !regionMap.keys().next().value ||
-    regionMapUpdated < Date.now() - 3600 * 1000
+    regionMap.keys().next().value &&
+    regionMapUpdated >= Date.now() - 3600 * 1000
   ) {
+    return regionMap
+  }
+
+  try {
     // Fetch regions from Medusa. We can't use the JS client here because middleware is running on Edge and the client needs a Node environment.
     const response = await fetch(`${BACKEND_URL}/store/regions`, {
       method: "GET",
@@ -37,11 +46,15 @@ async function getRegionMap(cacheId: string) {
     })
 
     if (!response.ok) {
-      throw new Error(`Backend returned ${response.status}`)
+      console.warn(
+        `Middleware: Backend returned ${response.status}. Using cached or empty map.`
+      )
+      return regionMap.keys().next().value
+        ? regionMap
+        : new Map<string, HttpTypes.StoreRegion>()
     }
 
     const json = await response.json()
-
     const { regions } = json
 
     if (!regions?.length) {
@@ -56,6 +69,15 @@ async function getRegionMap(cacheId: string) {
     })
 
     regionMapCache.regionMapUpdated = Date.now()
+  } catch (error) {
+    console.warn(
+      "Middleware: Failed to fetch regions from backend. Using cached or empty map.",
+      error instanceof Error ? error.message : error
+    )
+    // On fetch error, return cached map if available, otherwise empty map
+    return regionMap.keys().next().value
+      ? regionMap
+      : new Map<string, HttpTypes.StoreRegion>()
   }
 
   return regionMapCache.regionMap
@@ -75,7 +97,8 @@ async function getCountryCode(
   const urlCountryCode = request.nextUrl.pathname.split("/")[1]?.toLowerCase()
 
   // Cloudflare Workers provides country via request.cf.country
-  const cloudflareCountryCode = (request as { cf?: { country?: string } }).cf?.country?.toLowerCase()
+  const cloudflareCountryCode = (request as { cf?: { country?: string } }).cf
+    ?.country?.toLowerCase()
 
   // Vercel provides x-vercel-ip-country header
   const vercelCountryCode = request.headers
@@ -91,7 +114,7 @@ async function getCountryCode(
   } else if (regionMap.has(DEFAULT_REGION)) {
     countryCode = DEFAULT_REGION
   } else if (regionMap.keys().next().value) {
-    countryCode = regionMap.keys().next().value
+    countryCode = regionMap.keys().next().value as string
   }
 
   return countryCode
